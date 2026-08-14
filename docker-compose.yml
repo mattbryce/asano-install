@@ -1,0 +1,70 @@
+services:
+  # Applies database migrations and seeds the first admin, then exits. Asano
+  # waits for it to finish successfully, so a failed migration stops the app
+  # starting rather than letting it run against a half-applied schema.
+  migrate:
+    image: ghcr.io/mattbryce/asano-migrate:latest
+    restart: "no"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # Falls back to the bundled db, but a DATABASE_URL set in .env wins. This
+      # used to be an unconditional override, so a customer pointing at their
+      # own database was silently ignored and the only documented way out was
+      # editing this file — which then conflicts on every upgrade.
+      DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:${POSTGRES_PASSWORD:-changeme}@db:5432/asano}
+      # Migrations need a direct connection: prisma migrate deploy takes an
+      # advisory lock and uses prepared statements, and a transaction-mode
+      # pooler (PgBouncer, RDS Proxy, Supabase's pooler) breaks both — it does
+      # not error, it hangs. Set this when DATABASE_URL is pooled.
+      DIRECT_DATABASE_URL: ${DIRECT_DATABASE_URL:-}
+    depends_on:
+      db:
+        condition: service_healthy
+
+  asano:
+    image: ghcr.io/mattbryce/asano:latest
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # As above: bundled db by default, overridden by .env when set.
+      DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:${POSTGRES_PASSWORD:-changeme}@db:5432/asano}
+      # pg_dump (lib/backup.ts — Settings → Backup, and scheduled dumps)
+      # prefers this over DATABASE_URL when set, same pooler-incompatibility
+      # reason as the migrate service above.
+      DIRECT_DATABASE_URL: ${DIRECT_DATABASE_URL:-}
+    volumes:
+      # Bind mount, not a named volume — scheduled dumps (Settings → Backup)
+      # land here, and an operator needs to actually reach the files on their
+      # host to copy them elsewhere. See .env.example for a permissions note:
+      # this directory needs to be writable by the container's uid 1001
+      # before first bringing the stack up.
+      - ${BACKUP_PATH:-./backups}:/app/backups
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: asano
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:

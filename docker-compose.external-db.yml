@@ -1,0 +1,152 @@
+# Asano against a database you already run, from the very first boot.
+#
+#   docker compose -f docker-compose.external-db.yml up -d
+#
+# Most installs don't need this file at all: docker-compose.yml starts on
+# the bundled Postgres, and moving off it later — once an Enterprise
+# licence is installed — is Settings → Database in the running app, no
+# restart or different compose file required. This one is for the rarer
+# case of wanting your own database from the start rather than moving to
+# one afterward.
+#
+# A complete stack in its own right, not an overlay — no `db` service, no
+# volume, nothing bundled. Use this when the database is somebody else's
+# responsibility: an RDS or Azure instance, a Patroni cluster, whatever your
+# DBAs already back up and patch.
+#
+# It is a separate file rather than a profile or an override deliberately. The
+# documented way to do this used to be "remove the db service from
+# docker-compose.yml", which means editing a file we ship — and every upgrade
+# then arrives as a conflict in the one file a customer cannot afford to get
+# wrong. Nothing here needs editing; everything comes from .env.
+#
+# ── Database-less first boot ────────────────────────────────────────────────
+#
+# Leave DATABASE_URL empty (or unset it) and bring the stack up as-is — the
+# app boots into an in-UI setup wizard that collects a connection, migrates
+# the schema onto it, then restarts itself connected to it. For enterprises
+# whose policy forbids running the bundled Postgres even briefly, this is the
+# whole reason this file exists as a complete stack rather than an overlay of
+# docker-compose.yml.
+#
+# DATABASE_URL used to be a hard requirement here — forgetting to set it
+# failed immediately at `docker compose up`, before any container started.
+# It's optional now specifically to allow the above, but there is no path
+# from "compose came up" to "a wrong database gets configured" without
+# deliberate action at every step: reading a token out of `docker compose
+# logs`, pasting it, filling in a connection by hand, clicking a
+# destructively-labeled button. If you forgot to set DATABASE_URL rather than
+# meaning to leave it empty, `docker compose logs migrate` says so loudly —
+# check there first.
+#
+# ── What .env needs ─────────────────────────────────────────────────────────
+#
+#   DATABASE_URL          Where the app connects. Leave empty for the
+#                         database-less first boot above; otherwise:
+#                         postgresql://user:pass@host:5432/asano?sslmode=require
+#
+#   DIRECT_DATABASE_URL   Required *if* DATABASE_URL points at a transaction-mode
+#                         pooler (PgBouncer, RDS Proxy, Supabase's pooler).
+#                         Migrations cannot run through one: prisma migrate
+#                         deploy takes an advisory lock and uses prepared
+#                         statements, and a pooler in transaction mode supports
+#                         neither. It does not fail — it hangs. Point this at
+#                         the database directly, usually port 5432 rather than
+#                         the pooler's port.
+#
+#   DATABASE_SSL_CA       If your cluster presents a private CA. Either the PEM
+#   DATABASE_SSL_CA_PATH  itself, or a path to it (mount it in below). Without
+#                         either, Asano verifies against the system trust store,
+#                         which covers the managed providers. Verification is
+#                         never off unless you set DATABASE_SSL_INSECURE=true,
+#                         and you should not.
+#
+#                         If you pass the PEM inline, check it survives however
+#                         your platform delivers env vars — a shell that leaves
+#                         \n as literal backslash-n produces a certificate that
+#                         fails every handshake, and the error you get back says
+#                         nothing about newlines.
+#
+# ── Database privileges ─────────────────────────────────────────────────────
+#
+# Two roles, if your DBAs want least privilege. The migrator needs to change the
+# schema; the app never does:
+#
+#   CREATE ROLE asano_migrate LOGIN PASSWORD '…';
+#   CREATE ROLE asano_app     LOGIN PASSWORD '…';
+#   GRANT ALL ON SCHEMA public TO asano_migrate;
+#   GRANT USAGE ON SCHEMA public TO asano_app;
+#   GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES    IN SCHEMA public TO asano_app;
+#   GRANT USAGE, SELECT                 ON ALL SEQUENCES  IN SCHEMA public TO asano_app;
+#   ALTER DEFAULT PRIVILEGES FOR ROLE asano_migrate IN SCHEMA public
+#     GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO asano_app;
+#   ALTER DEFAULT PRIVILEGES FOR ROLE asano_migrate IN SCHEMA public
+#     GRANT USAGE, SELECT ON SEQUENCES TO asano_app;
+#
+# Then DIRECT_DATABASE_URL uses asano_migrate and DATABASE_URL uses asano_app.
+#
+# ── Migrating in a change window ────────────────────────────────────────────
+#
+# By default the app waits for the migrator to succeed, so a bad migration stops
+# the app rather than letting it run against a half-applied schema. If your
+# change process needs the DDL reviewed first, run the two separately:
+#
+#   docker compose -f docker-compose.external-db.yml run --rm migrate
+#   docker compose -f docker-compose.external-db.yml up -d asano
+#
+# Tested against PostgreSQL 14 to 17.
+
+services:
+  migrate:
+    image: ghcr.io/mattbryce/asano-migrate:latest
+    restart: "no"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # Empty is a deliberate, supported state — see "Database-less first
+      # boot" above. docker-entrypoint-migrate.sh no-ops (exit 0, logged
+      # loudly) rather than failing when this is empty, so `asano`'s
+      # dependency on this service completing is still satisfied.
+      DATABASE_URL: ${DATABASE_URL:-}
+      DIRECT_DATABASE_URL: ${DIRECT_DATABASE_URL:-}
+      DATABASE_SSL_CA: ${DATABASE_SSL_CA:-}
+      DATABASE_SSL_CA_PATH: ${DATABASE_SSL_CA_PATH:-}
+    # Uncomment alongside DATABASE_SSL_CA_PATH to mount a private CA.
+    # volumes:
+    #   - ./ca.pem:/certs/ca.pem:ro
+
+  asano:
+    image: ghcr.io/mattbryce/asano:latest
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-}
+      DIRECT_DATABASE_URL: ${DIRECT_DATABASE_URL:-}
+      DATABASE_SSL_CA: ${DATABASE_SSL_CA:-}
+      DATABASE_SSL_CA_PATH: ${DATABASE_SSL_CA_PATH:-}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    volumes:
+      # Bind mount, not a named volume — an operator needs to actually reach
+      # these files on their host. Three things land here, all on the
+      # container's writable layer without it: scheduled dumps (Settings →
+      # Backup, off by default — the audience for scheduled dumps is installs
+      # with no DBA behind them, which is precisely not who reaches for this
+      # file, though on-demand pg_dump/export downloads work regardless of
+      # this mount); Settings → Database's override file when moving from
+      # this external Postgres to a different one; and the database-less
+      # first boot's override file above. That last one is why this is
+      # active by default in this file specifically — there's no "read the
+      # docs before your first `docker compose up`" moment that would
+      # otherwise surface the need for it, since the whole premise is
+      # DATABASE_URL was never set. Without this mount, the connection
+      # written by either flow survives this container's own restart but not
+      # `docker compose down && up`.
+      # - ./ca.pem:/certs/ca.pem:ro
+      - ${BACKUP_PATH:-./backups}:/app/backups
