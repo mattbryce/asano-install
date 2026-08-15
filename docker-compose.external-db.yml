@@ -120,7 +120,10 @@ services:
     image: ghcr.io/mattbryce/asano:latest
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      # Bound to localhost only — see docker-compose.yml's own comment on
+      # this line. Put a reverse proxy in front rather than exposing this
+      # directly.
+      - "127.0.0.1:3000:3000"
     env_file:
       - path: .env
         required: false

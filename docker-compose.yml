@@ -27,7 +27,14 @@ services:
     image: ghcr.io/mattbryce/asano:latest
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      # Bound to localhost only — Next.js isn't meant to face the internet
+      # directly, no TLS of its own and nothing rate-limiting it. Put a
+      # reverse proxy (Caddy, nginx, Traefik) in front on 80/443 and point it
+      # at localhost:3000; see "Putting Asano behind a reverse proxy" in the
+      # install guide. Reachable as localhost:3000 from the host itself
+      # without one — fine for a quick local eval, not for anyone else to
+      # reach it remotely.
+      - "127.0.0.1:3000:3000"
     env_file:
       - path: .env
         required: false
