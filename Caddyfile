@@ -1,0 +1,14 @@
+# Reverse proxy in front of Asano. Nothing here needs editing — set
+# SITE_ADDRESS in .env instead.
+#
+# Unset (the default): listens on :80, plain HTTP, no domain — works
+# immediately for a local eval with nothing to configure, and Caddy makes no
+# attempt at HTTPS since there's no real hostname to request a certificate
+# for.
+#
+# Set to a real domain (SITE_ADDRESS=your-domain.com in .env, DNS already
+# pointed at this server, 80/443 open): Caddy requests and renews a real
+# Let's Encrypt certificate for it automatically. Nothing else changes.
+{$SITE_ADDRESS::80} {
+	reverse_proxy asano:3000
+}

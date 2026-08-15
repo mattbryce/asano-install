@@ -120,9 +120,8 @@ services:
     image: ghcr.io/mattbryce/asano:latest
     restart: unless-stopped
     ports:
-      # Bound to localhost only — see docker-compose.yml's own comment on
-      # this line. Put a reverse proxy in front rather than exposing this
-      # directly.
+      # Bound to localhost only — the caddy service below is the public
+      # entry point. See docker-compose.yml's own comment on this line.
       - "127.0.0.1:3000:3000"
     env_file:
       - path: .env
@@ -153,3 +152,28 @@ services:
       # `docker compose down && up`.
       # - ./ca.pem:/certs/ca.pem:ro
       - ${BACKUP_PATH:-./backups}:/app/backups
+
+  # The public entry point. See docker-compose.yml's own comment on this
+  # service — identical here, just alongside a different database.
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    env_file:
+      # See docker-compose.yml's own comment on this line — Caddy's default
+      # in the Caddyfile only applies when SITE_ADDRESS is genuinely unset.
+      - path: .env
+        required: false
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - asano
+
+volumes:
+  caddy_data:
+  caddy_config:

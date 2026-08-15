@@ -28,12 +28,11 @@ services:
     restart: unless-stopped
     ports:
       # Bound to localhost only — Next.js isn't meant to face the internet
-      # directly, no TLS of its own and nothing rate-limiting it. Put a
-      # reverse proxy (Caddy, nginx, Traefik) in front on 80/443 and point it
-      # at localhost:3000; see "Putting Asano behind a reverse proxy" in the
-      # install guide. Reachable as localhost:3000 from the host itself
-      # without one — fine for a quick local eval, not for anyone else to
-      # reach it remotely.
+      # directly, no TLS of its own and nothing rate-limiting it. The caddy
+      # service below is the actual public entry point (80/443); this stays
+      # reachable as localhost:3000 from the host itself as a bypass — handy
+      # for a quick local eval, or for troubleshooting if Caddy itself is the
+      # problem.
       - "127.0.0.1:3000:3000"
     env_file:
       - path: .env
@@ -73,5 +72,36 @@ services:
       timeout: 5s
       retries: 5
 
+  # The public entry point. Reverse-proxies to asano over the compose
+  # network (not localhost:3000 — that binding above is host-only, this
+  # container reaches it as `asano` regardless). SITE_ADDRESS unset means
+  # "listen on :80 plain HTTP, no domain" — nothing to configure for a local
+  # eval; set it in .env to your real domain and Caddy requests and renews a
+  # real certificate for it automatically, no separate step. See the
+  # Caddyfile itself for the one line of config this reads.
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    env_file:
+      # Not `environment: SITE_ADDRESS: ${SITE_ADDRESS:-}` — Compose would
+      # set the container's env var to an explicit empty string when unset
+      # on the host, and Caddy's own `{$SITE_ADDRESS::80}` default in the
+      # Caddyfile only applies when the variable is genuinely absent, not
+      # merely empty. env_file leaves it unset entirely unless .env sets it.
+      - path: .env
+        required: false
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - asano
+
 volumes:
   postgres_data:
+  caddy_data:
+  caddy_config:
