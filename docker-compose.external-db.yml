@@ -164,15 +164,26 @@ services:
       - "443:443/udp"
     env_file:
       # See docker-compose.yml's own comment on this line — Caddy's default
-      # in the Caddyfile only applies when SITE_ADDRESS is genuinely unset.
+      # below only applies when SITE_ADDRESS is genuinely unset.
       - path: .env
         required: false
+    configs:
+      # See docker-compose.yml's own comment on this line for why this is
+      # inline rather than a bind-mounted ./Caddyfile.
+      - source: caddyfile
+        target: /etc/caddy/Caddyfile
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
       - asano
+
+configs:
+  caddyfile:
+    content: |
+      {$$SITE_ADDRESS::80} {
+      	reverse_proxy asano:3000
+      }
 
 volumes:
   caddy_data:

@@ -77,8 +77,7 @@ services:
   # container reaches it as `asano` regardless). SITE_ADDRESS unset means
   # "listen on :80 plain HTTP, no domain" — nothing to configure for a local
   # eval; set it in .env to your real domain and Caddy requests and renews a
-  # real certificate for it automatically, no separate step. See the
-  # Caddyfile itself for the one line of config this reads.
+  # real certificate for it automatically, no separate step.
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
@@ -89,17 +88,42 @@ services:
     env_file:
       # Not `environment: SITE_ADDRESS: ${SITE_ADDRESS:-}` — Compose would
       # set the container's env var to an explicit empty string when unset
-      # on the host, and Caddy's own `{$SITE_ADDRESS::80}` default in the
-      # Caddyfile only applies when the variable is genuinely absent, not
-      # merely empty. env_file leaves it unset entirely unless .env sets it.
+      # on the host, and Caddy's own `{$SITE_ADDRESS::80}` default below
+      # only applies when the variable is genuinely absent, not merely
+      # empty. env_file leaves it unset entirely unless .env sets it.
       - path: .env
         required: false
+    configs:
+      # Inline rather than a bind-mounted ./Caddyfile — a customer who
+      # curled only this compose file (an easy thing to do; it used to be
+      # the whole install) would otherwise hit a genuinely bad failure:
+      # Docker silently creates an empty *directory* named Caddyfile at the
+      # missing bind-mount source, the container fails to start with an
+      # opaque "not a directory" mount error, and that stray directory then
+      # blocks even placing a real file there afterward. Confirmed by
+      # reproducing it. This can't happen with a config baked into the one
+      # file that's always present.
+      #
+      # $$ (not $) is deliberate: Compose interpolates $VAR/${VAR} in every
+      # string in this file, including inside this block — a single $ here
+      # would make Compose consume SITE_ADDRESS itself before Caddy ever
+      # saw it, rather than passing the placeholder through. $$ is Compose's
+      # own escape for a literal $, so the config as delivered to the
+      # container keeps Caddy's native {$SITE_ADDRESS::80} syntax intact.
+      - source: caddyfile
+        target: /etc/caddy/Caddyfile
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
       - asano
+
+configs:
+  caddyfile:
+    content: |
+      {$$SITE_ADDRESS::80} {
+      	reverse_proxy asano:3000
+      }
 
 volumes:
   postgres_data:
